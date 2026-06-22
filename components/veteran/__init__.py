@@ -50,15 +50,14 @@ ENTITY_REGISTRY = [
     ("voltage", "sensor", "set_sensor_voltage", _sensor_defaults("Voltage", "mdi:flash", "voltage", "measurement", "V", 2)),
     ("headlight", "binary", "set_binary_sensor_headlight", {"name": "Headlight", "icon": "mdi:lightbulb"}),
 ]
-for i in range(1, 7):
-    ENTITY_REGISTRY.append((
-        f"bms_left_temp_{i}", "sensor", f"set_sensor_bms_left_temp_{i}",
-        _sensor_defaults(f"BMS Left Temperature {i}", "mdi:thermometer", "temperature", "measurement", "°C", 2),
-    ))
-    ENTITY_REGISTRY.append((
-        f"bms_right_temp_{i}", "sensor", f"set_sensor_bms_right_temp_{i}",
-        _sensor_defaults(f"BMS Right Temperature {i}", "mdi:thermometer", "temperature", "measurement", "°C", 2),
-    ))
+ENTITY_REGISTRY.append((
+    "bms_left_temp", "sensor", "set_sensor_bms_left_temp",
+    _sensor_defaults("BMS Left Temperature", "mdi:thermometer", "temperature", "measurement", "°C", 2),
+))
+ENTITY_REGISTRY.append((
+    "bms_right_temp", "sensor", "set_sensor_bms_right_temp",
+    _sensor_defaults("BMS Right Temperature", "mdi:thermometer", "temperature", "measurement", "°C", 2),
+))
 
 SENSOR_KEYS = [r[0] for r in ENTITY_REGISTRY if r[1] == "sensor"]
 BINARY_KEYS = [r[0] for r in ENTITY_REGISTRY if r[1] == "binary"]
@@ -85,10 +84,18 @@ def _default_name(key):
     return DEFAULTS_BY_KEY.get(key, {}).get("name", key)
 
 
+CONF_DISABLED_ENTITIES = "disabled_entities"
+
+
 def _fill_missing_entity_keys(config):
-    """Все сущности из реестра по умолчанию создаются; отсутствующие ключи получают {}."""
+    """Все сущности из реестра по умолчанию создаются; отсутствующие ключи получают {}.
+    Ключи из disabled_entities пропускаются (сущность не создаётся)."""
     result = dict(config)
+    disabled = result.get(CONF_DISABLED_ENTITIES) or []
     for key in ALL_ENTITY_KEYS:
+        if key in disabled:
+            result.pop(key, None)
+            continue
         if key not in result:
             result[key] = {}
     return result
@@ -102,7 +109,10 @@ def _expand_id_prefix(config):
     if not prefix and not device_id:
         return result
     name_prefix = (prefix or "").capitalize() if not device_id else ""
+    disabled = result.get(CONF_DISABLED_ENTITIES) or []
     for key in ALL_ENTITY_KEYS:
+        if key in disabled:
+            continue
         entry = result.get(key)
         if entry is None:
             result[key] = {}
@@ -146,12 +156,9 @@ WEB_SERVER_DEFAULTS = {
     "headlight": (CONF_SORTING_GROUP_ID, 53),
     "bms_left_current": (CONF_SORTING_GROUP_ID, 60),
     "bms_right_current": (CONF_SORTING_GROUP_ID, 61),
-    # 70..75: bms_left_temp_1..6
-    # 80..85: bms_right_temp_1..6
+    "bms_left_temp": (CONF_SORTING_GROUP_ID, 70),
+    "bms_right_temp": (CONF_SORTING_GROUP_ID, 71),
 }
-for i in range(1, 7):
-    WEB_SERVER_DEFAULTS[f"bms_left_temp_{i}"] = (CONF_SORTING_GROUP_ID, 69 + i)
-    WEB_SERVER_DEFAULTS[f"bms_right_temp_{i}"] = (CONF_SORTING_GROUP_ID, 79 + i)
 
 
 def _inject_web_server_defaults(config):
@@ -180,6 +187,7 @@ SINGLE_VETERAN_SCHEMA = cv.All(
         cv.GenerateID(): cv.declare_id(VeteranComponent),
         cv.Optional("id_prefix"): cv.string,
         cv.Optional("device_id"): cv.string,
+        cv.Optional(CONF_DISABLED_ENTITIES, default=[]): cv.ensure_list(cv.one_of(*ALL_ENTITY_KEYS, lower=True)),
         cv.Optional(CONF_SORTING_GROUP_ID): cv.string,
         cv.Optional(CONF_NOMINAL_VOLTAGE, default=151.2): cv.float_range(90.0, 200.0),
         cv.Optional(CONF_CELL_COUNT, default=36): cv.int_range(min=1, max=42),
@@ -224,15 +232,23 @@ async def _to_code_one(config):
         cg.add(var.set_charge_voltage_offset(config[CONF_CHARGE_VOLTAGE_OFFSET]))
     cg.add(var.set_charge_stop_voltage_offset(config[CONF_CHARGE_STOP_VOLTAGE_OFFSET]))
 
+    disabled = config.get(CONF_DISABLED_ENTITIES) or []
+
     for key in BINARY_KEYS:
+        if key in disabled:
+            continue
         sens = await binary_sensor.new_binary_sensor(config[key])
         cg.add(getattr(var, SETTER_BY_KEY[key])(sens))
 
     for key in SENSOR_KEYS:
+        if key in disabled:
+            continue
         sens = await sensor.new_sensor(config[key])
         cg.add(getattr(var, SETTER_BY_KEY[key])(sens))
 
     for key in TEXT_KEYS:
+        if key in disabled:
+            continue
         sens = await text_sensor.new_text_sensor(config[key])
         cg.add(getattr(var, SETTER_BY_KEY[key])(sens))
 

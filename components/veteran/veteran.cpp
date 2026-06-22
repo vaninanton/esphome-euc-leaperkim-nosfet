@@ -1,4 +1,5 @@
 // Copyright 2025 <Tony V>
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -55,7 +56,25 @@ static void append_settings_chunk(std::vector<uint8_t> &out, const uint8_t *payl
   append_crc32_be(out, payload, len);
 }
 
-void VeteranComponent::setup() {}
+void VeteranComponent::setup() {
+  // Восстанавливаем накопительный пробег из NVS, чтобы он не обнулялся при перезагрузке ESP
+  // (до первого переподключения к колесу). Ключ стабилен между перезагрузками: берём hash
+  // object_id сенсора Mileage total — у каждого устройства он свой, иначе фиксированный fallback.
+  uint32_t key = sensor_mileage_total_ != nullptr ? sensor_mileage_total_->get_object_id_hash()
+                                                   : fnv1_hash("veteran_mileage");
+  mileage_pref_ = global_preferences->make_preference<MileagePrefs>(key);
+  MileagePrefs stored{};
+  if (mileage_pref_.load(&stored)) {
+    euc_.mileage_current = stored.current;
+    euc_.mileage_total = stored.total;
+    publish_state_from_euc();
+  }
+}
+
+void VeteranComponent::save_mileage_() {
+  MileagePrefs prefs{euc_.mileage_current, euc_.mileage_total};
+  mileage_pref_.save(&prefs);
+}
 
 void VeteranComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Veteran EUC:");
@@ -159,8 +178,13 @@ void VeteranComponent::parse_common_payload(const uint8_t *data, size_t size) {
   (void)size;
   const uint8_t *p = data + COMMON_PAYLOAD_OFFSET;
   euc_.voltage = read_u16_be(p + 0);
+  float prev_current = euc_.mileage_current;
+  float prev_total = euc_.mileage_total;
   euc_.mileage_current = read_u32_mid_le(p + 4) / 1000.0f;
   euc_.mileage_total = read_u32_mid_le(p + 8) / 1000.0f;
+  // Сохраняем накопительный пробег в NVS при изменении (write батчится самим ESPHome).
+  if (euc_.mileage_current != prev_current || euc_.mileage_total != prev_total)
+    save_mileage_();
   euc_.temperature_motor = read_u16_be(p + 14) / 100.0f;
   euc_.auto_off = read_u16_be(p + 16);
   euc_.charging = data[COMMON_PAYLOAD_OFFSET + 19] == 0x01;
@@ -280,11 +304,15 @@ void VeteranComponent::publish_state_from_euc() {
     sensor_bms_left_current_->publish_state(euc_.bms.left.current);
   if (sensor_bms_right_current_ != nullptr)
     sensor_bms_right_current_->publish_state(euc_.bms.right.current);
-  for (size_t i = 0; i < BMSBlockData::NUM_TEMPS; i++) {
-    if (bms_temp_sensors_[0][i] != nullptr)
-      bms_temp_sensors_[0][i]->publish_state(euc_.bms.left.temps[i]);
-    if (bms_temp_sensors_[1][i] != nullptr)
-      bms_temp_sensors_[1][i]->publish_state(euc_.bms.right.temps[i]);
+  // Publish only the hottest sensor per BMS side instead of all six.
+  const BMSBlockData *bms_sides[2] = {&euc_.bms.left, &euc_.bms.right};
+  for (size_t side = 0; side < 2; side++) {
+    if (bms_temp_sensors_[side] == nullptr)
+      continue;
+    float max_temp = bms_sides[side]->temps[0];
+    for (size_t i = 1; i < BMSBlockData::NUM_TEMPS; i++)
+      max_temp = std::max(max_temp, bms_sides[side]->temps[i]);
+    bms_temp_sensors_[side]->publish_state(max_temp);
   }
   if (sensor_power_ != nullptr) {
     float power = euc_.voltage * (euc_.bms.left.current + euc_.bms.right.current) / 100.0f;

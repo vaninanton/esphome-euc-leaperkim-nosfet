@@ -6,6 +6,7 @@
 #include <vector>
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -126,18 +127,9 @@ class VeteranComponent : public Component {
   void set_binary_sensor_headlight(binary_sensor::BinarySensor *s) { binary_sensor_headlight_ = s; }
   void set_max_charging_voltage_number(number::Number *n) { max_charging_voltage_number_ = n; }
 
-  void set_sensor_bms_left_temp_1(sensor::Sensor *s) { bms_temp_sensors_[0][0] = s; }
-  void set_sensor_bms_left_temp_2(sensor::Sensor *s) { bms_temp_sensors_[0][1] = s; }
-  void set_sensor_bms_left_temp_3(sensor::Sensor *s) { bms_temp_sensors_[0][2] = s; }
-  void set_sensor_bms_left_temp_4(sensor::Sensor *s) { bms_temp_sensors_[0][3] = s; }
-  void set_sensor_bms_left_temp_5(sensor::Sensor *s) { bms_temp_sensors_[0][4] = s; }
-  void set_sensor_bms_left_temp_6(sensor::Sensor *s) { bms_temp_sensors_[0][5] = s; }
-  void set_sensor_bms_right_temp_1(sensor::Sensor *s) { bms_temp_sensors_[1][0] = s; }
-  void set_sensor_bms_right_temp_2(sensor::Sensor *s) { bms_temp_sensors_[1][1] = s; }
-  void set_sensor_bms_right_temp_3(sensor::Sensor *s) { bms_temp_sensors_[1][2] = s; }
-  void set_sensor_bms_right_temp_4(sensor::Sensor *s) { bms_temp_sensors_[1][3] = s; }
-  void set_sensor_bms_right_temp_5(sensor::Sensor *s) { bms_temp_sensors_[1][4] = s; }
-  void set_sensor_bms_right_temp_6(sensor::Sensor *s) { bms_temp_sensors_[1][5] = s; }
+  // Publish only the hottest sensor of each BMS side instead of all six.
+  void set_sensor_bms_left_temp(sensor::Sensor *s) { bms_temp_sensors_[0] = s; }
+  void set_sensor_bms_right_temp(sensor::Sensor *s) { bms_temp_sensors_[1] = s; }
 
   void setup() override;
   void loop() override;
@@ -160,6 +152,14 @@ class VeteranComponent : public Component {
   float charge_voltage_offset_{145.0f};
   float charge_stop_voltage_offset_{682.0f};
 
+  // Накопительный пробег переживает перезагрузку ESP: храним в NVS и восстанавливаем в setup().
+  struct MileagePrefs {
+    float current;
+    float total;
+  };
+  ESPPreferenceObject mileage_pref_;
+  void save_mileage_();
+
   binary_sensor::BinarySensor *binary_sensor_charging_{nullptr};
   switch_::Switch *switch_lights_{nullptr};
   binary_sensor::BinarySensor *binary_sensor_high_speed_mode_{nullptr};
@@ -175,7 +175,8 @@ class VeteranComponent : public Component {
   sensor::Sensor *sensor_temperature_motor_{nullptr};
   sensor::Sensor *sensor_tho_ra_{nullptr};
   sensor::Sensor *sensor_voltage_{nullptr};
-  sensor::Sensor *bms_temp_sensors_[2][BMSBlockData::NUM_TEMPS]{};
+  // [0] = left BMS max temp, [1] = right BMS max temp
+  sensor::Sensor *bms_temp_sensors_[2]{};
   text_sensor::TextSensor *text_sensor_firmware_version_{nullptr};
   binary_sensor::BinarySensor *binary_sensor_headlight_{nullptr};
   number::Number *max_charging_voltage_number_{nullptr};
